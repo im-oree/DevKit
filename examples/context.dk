@@ -1,0 +1,6 @@
+﻿# Example 2 — Gather context for AI assistant
+# Dumps tree + selected files so you can copy-paste to Claude / ChatGPT
+
+:TREE src --depth 3
+:READ src/App.tsx src/main.tsx
+:SEARCH "TODO" --in src --ext .ts,.tsx

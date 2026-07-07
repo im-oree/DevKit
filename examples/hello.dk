@@ -1,0 +1,22 @@
+﻿# Example 1 — Hello DevKit
+# This creates a demo file, modifies it, and cleans up.
+
+:CREATE demo/hello.txt
+Hello from DevKit!
+This is line 2.
+Line 3 has TODO: replace me.
+:END
+
+:REPLACE demo/hello.txt
+FIND:
+TODO: replace me.
+WITH:
+✓ Replaced by DevKit.
+:END
+
+:APPEND demo/hello.txt
+Line 4 appended.
+:END
+
+:INFO demo/hello.txt
+:READ demo/hello.txt

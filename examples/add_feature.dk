@@ -1,0 +1,21 @@
+﻿# Example 3 — Add a new hook + wire it up in one shot
+
+:CREATE src/hooks/useSubscription.ts
+import { useAuthStore } from '@/store/authStore';
+
+export function useSubscription() {
+  const user = useAuthStore((s) => s.user);
+  return {
+    tier: user?.subscriptionTier ?? 'free',
+    isPro: user?.subscriptionTier === 'pro',
+    isElite: user?.subscriptionTier === 'elite',
+  };
+}
+:END
+
+:INSERT_AFTER src/hooks/useAuth.ts
+FIND:
+export function useAuth() {
+WITH:
+// New: subscription helper co-located
+:END
