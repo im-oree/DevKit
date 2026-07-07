@@ -1,0 +1,703 @@
+﻿# -*- coding: utf-8 -*-
+"""DevKit GUI — polished edition. Runs everywhere Python is installed."""
+import os
+import sys
+import threading
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, scrolledtext
+
+from .runner import run_script, summarize
+from .parser import ParseError
+from . import backup
+from .manual import MANUAL
+from .macros import (
+    AI_SYNTAX_REFERENCE, AI_COLLAB_PROMPT, QUICK_START,
+    build_tree_text, build_all_in_one,
+)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DESIGN TOKENS — GitHub Dark inspired
+# ═══════════════════════════════════════════════════════════════
+class T:
+    # Backgrounds
+    BG          = "#0d1117"    # app background
+    PANEL       = "#161b22"    # panel/card background
+    ELEVATED    = "#21262d"    # buttons, elevated surfaces
+    HOVER       = "#30363d"    # hover state
+    INPUT       = "#010409"    # text input / code areas
+
+    # Borders
+    BORDER      = "#30363d"
+    BORDER_HL   = "#484f58"
+
+    # Text
+    FG          = "#e6edf3"    # primary text
+    FG_MUTED    = "#7d8590"    # secondary text
+    FG_SUBTLE   = "#484f58"    # tertiary / hints
+
+    # Accents
+    GREEN       = "#238636"
+    GREEN_HL    = "#2ea043"
+    GREEN_SOFT  = "#3fb950"
+    YELLOW      = "#d29922"
+    RED         = "#da3633"
+    BLUE        = "#58a6ff"
+    PURPLE      = "#a371f7"
+
+    # Semantic
+    OK          = "#3fb950"
+    WARN        = "#d29922"
+    ERROR       = "#f85149"
+    DIFF_ADD_BG = "#0f2f1a"
+    DIFF_DEL_BG = "#2d0f13"
+
+
+# ═══════════════════════════════════════════════════════════════
+#  FONTS
+# ═══════════════════════════════════════════════════════════════
+def _pick_font(candidates, size):
+    """Return first available font family from list."""
+    from tkinter import font as tkfont
+    available = set(tkfont.families())
+    for c in candidates:
+        if c in available:
+            return (c, size)
+    return (candidates[-1], size)
+
+
+def get_fonts():
+    mono = _pick_font(
+        ["Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", "Menlo", "Courier"],
+        11
+    )
+    mono_bold = (mono[0], mono[1], "bold")
+    ui = _pick_font(
+        ["Segoe UI Variable", "Segoe UI", "Inter", "SF Pro Text", "Helvetica"],
+        10
+    )
+    ui_bold = (ui[0], ui[1], "bold")
+    ui_small = (ui[0], 9)
+    ui_tiny_caps = (ui[0], 8, "bold")
+    header = (ui[0], 11, "bold")
+    return {
+        "mono": mono, "mono_bold": mono_bold,
+        "ui": ui, "ui_bold": ui_bold, "ui_small": ui_small,
+        "ui_tiny_caps": ui_tiny_caps, "header": header,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════
+#  MAIN GUI
+# ═══════════════════════════════════════════════════════════════
+class DevKitGUI:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.cwd = os.getcwd()
+        self.fonts = get_fonts()
+        self.op_count = 0
+        self._setup_window()
+        self._setup_style()
+        self._build_ui()
+        self._refresh_backup_count()
+
+    def _setup_window(self):
+        self.root.title("DevKit  ·  Project Ops Toolkit")
+        self.root.geometry("1280x820")
+        self.root.minsize(1000, 640)
+        self.root.configure(bg=T.BG)
+
+    def _setup_style(self):
+        s = ttk.Style()
+        try:
+            s.theme_use("clam")
+        except Exception:
+            pass
+
+        # Frames
+        s.configure("TFrame", background=T.BG)
+        s.configure("Panel.TFrame", background=T.PANEL)
+        s.configure("Toolbar.TFrame", background=T.BG)
+
+        # Labels
+        s.configure("TLabel", background=T.BG, foreground=T.FG, font=self.fonts["ui"])
+        s.configure("Muted.TLabel", background=T.BG, foreground=T.FG_MUTED,
+                    font=self.fonts["ui"])
+        s.configure("Subtle.TLabel", background=T.BG, foreground=T.FG_SUBTLE,
+                    font=self.fonts["ui_small"])
+        s.configure("Header.TLabel", background=T.BG, foreground=T.FG,
+                    font=self.fonts["header"])
+        s.configure("PanelHeader.TLabel", background=T.PANEL, foreground=T.FG,
+                    font=self.fonts["header"])
+        s.configure("Section.TLabel", background=T.BG, foreground=T.FG_SUBTLE,
+                    font=self.fonts["ui_tiny_caps"])
+        s.configure("Path.TLabel", background=T.INPUT, foreground=T.BLUE,
+                    font=self.fonts["mono"], padding=(10, 6))
+
+        # Buttons - Ghost (default toolbar buttons)
+        s.configure("Ghost.TButton",
+                    background=T.ELEVATED, foreground=T.FG,
+                    font=self.fonts["ui"],
+                    borderwidth=0, padding=(12, 7),
+                    focuscolor=T.BG)
+        s.map("Ghost.TButton",
+              background=[("active", T.HOVER), ("pressed", T.HOVER)],
+              foreground=[("active", T.FG)])
+
+        # Buttons - Primary (Run)
+        s.configure("Primary.TButton",
+                    background=T.GREEN, foreground="#ffffff",
+                    font=self.fonts["ui_bold"],
+                    borderwidth=0, padding=(18, 9),
+                    focuscolor=T.BG)
+        s.map("Primary.TButton",
+              background=[("active", T.GREEN_HL), ("pressed", T.GREEN_HL)])
+
+        # Buttons - Secondary (Preview)
+        s.configure("Secondary.TButton",
+                    background=T.ELEVATED, foreground=T.FG,
+                    font=self.fonts["ui_bold"],
+                    borderwidth=0, padding=(14, 9),
+                    focuscolor=T.BG)
+        s.map("Secondary.TButton",
+              background=[("active", T.HOVER)])
+
+        # Menubutton (for Macros dropdown)
+        s.configure("Ghost.TMenubutton",
+                    background=T.ELEVATED, foreground=T.FG,
+                    font=self.fonts["ui"],
+                    borderwidth=0, padding=(12, 7),
+                    arrowcolor=T.FG_MUTED)
+        s.map("Ghost.TMenubutton",
+              background=[("active", T.HOVER)])
+
+    # ═══════════════════════════════════════════════════════════
+    #  UI BUILDING
+    # ═══════════════════════════════════════════════════════════
+    def _build_ui(self):
+        self._build_project_bar()
+        self._build_toolbar()
+        self._build_main_area()
+        self._build_status_bar()
+
+        # Keyboard shortcuts
+        self.root.bind("<F5>", lambda e: self._execute(False))
+        self.root.bind("<Control-Return>", lambda e: self._execute(True))
+        self.root.bind("<Control-l>", lambda e: self._clear())
+
+    def _build_project_bar(self):
+        """Top bar: project path + Change button."""
+        bar = ttk.Frame(self.root, padding=(20, 14, 20, 4))
+        bar.pack(fill="x")
+
+        ttk.Label(bar, text="PROJECT", style="Section.TLabel").pack(
+            side="left", padx=(0, 10))
+
+        self.project_var = tk.StringVar(value=self.cwd)
+        path_lbl = ttk.Label(bar, textvariable=self.project_var, style="Path.TLabel")
+        path_lbl.pack(side="left", fill="x", expand=True, padx=(0, 12))
+
+        ttk.Button(bar, text="Change…", style="Ghost.TButton",
+                   command=self._pick_folder).pack(side="left")
+
+    def _build_toolbar(self):
+        """Grouped toolbar: FILE | AI | TOOLS   [Preview] [Run]"""
+        bar = ttk.Frame(self.root, padding=(20, 6, 20, 10))
+        bar.pack(fill="x")
+
+        # ── FILE group ──
+        self._toolbar_group_label(bar, "FILE")
+        ttk.Button(bar, text="📋  Paste", style="Ghost.TButton",
+                   command=self._paste_clipboard).pack(side="left", padx=2)
+        ttk.Button(bar, text="📂  Load", style="Ghost.TButton",
+                   command=self._load_script).pack(side="left", padx=2)
+        ttk.Button(bar, text="💾  Save", style="Ghost.TButton",
+                   command=self._save_script).pack(side="left", padx=2)
+        ttk.Button(bar, text="🗑  Clear", style="Ghost.TButton",
+                   command=self._clear).pack(side="left", padx=2)
+
+        self._toolbar_separator(bar)
+
+        # ── AI group ──
+        self._toolbar_group_label(bar, "AI")
+
+        macros_btn = ttk.Menubutton(bar, text="🧠  Macros  ▾",
+                                    style="Ghost.TMenubutton")
+        macros_menu = tk.Menu(macros_btn, tearoff=0,
+                              bg=T.ELEVATED, fg=T.FG,
+                              activebackground=T.GREEN, activeforeground="#ffffff",
+                              relief="flat", borderwidth=0,
+                              font=self.fonts["ui"])
+        macros_menu.add_command(label="  🌳   Copy Project Tree (depth 3)",
+                                command=lambda: self._copy_macro_tree(3))
+        macros_menu.add_command(label="  🌲   Copy Project Tree (depth 5)",
+                                command=lambda: self._copy_macro_tree(5))
+        macros_menu.add_separator()
+        macros_menu.add_command(label="  🤝   Copy AI Collab Prompt",
+                                command=self._copy_macro_prompt)
+        macros_menu.add_command(label="  📚   Copy AI Syntax Reference",
+                                command=self._copy_macro_syntax)
+        macros_menu.add_separator()
+        macros_menu.add_command(label="  🧠   Copy ALL-IN-ONE",
+                                command=self._copy_macro_all)
+        macros_btn["menu"] = macros_menu
+        macros_btn.pack(side="left", padx=2)
+
+        ttk.Button(bar, text="⚡  Quick Start", style="Ghost.TButton",
+                   command=self._show_quickstart).pack(side="left", padx=2)
+
+        self._toolbar_separator(bar)
+
+        # ── TOOLS group ──
+        self._toolbar_group_label(bar, "TOOLS")
+        ttk.Button(bar, text="🌳  Tree", style="Ghost.TButton",
+                   command=self._quick_tree).pack(side="left", padx=2)
+        ttk.Button(bar, text="↩  Undo", style="Ghost.TButton",
+                   command=self._undo).pack(side="left", padx=2)
+        ttk.Button(bar, text="📚  Sessions", style="Ghost.TButton",
+                   command=self._sessions).pack(side="left", padx=2)
+        ttk.Button(bar, text="📖  Manual", style="Ghost.TButton",
+                   command=self._show_manual).pack(side="left", padx=2)
+
+        # ── Primary actions (right side) ──
+        ttk.Button(bar, text="✅  Run   ·   F5", style="Primary.TButton",
+                   command=lambda: self._execute(False)).pack(
+                   side="right", padx=(6, 0))
+        ttk.Button(bar, text="👁  Preview", style="Secondary.TButton",
+                   command=lambda: self._execute(True)).pack(side="right", padx=2)
+
+    def _toolbar_group_label(self, parent, text):
+        ttk.Label(parent, text=text, style="Section.TLabel").pack(
+            side="left", padx=(0, 8))
+
+    def _toolbar_separator(self, parent):
+        sep = tk.Frame(parent, bg=T.BORDER, width=1)
+        sep.pack(side="left", fill="y", padx=12, pady=4)
+
+    def _build_main_area(self):
+        """Main content: script | output split."""
+        wrap = ttk.Frame(self.root, padding=(20, 4, 20, 10))
+        wrap.pack(fill="both", expand=True)
+
+        paned = tk.PanedWindow(wrap, orient="horizontal",
+                               bg=T.BG, sashwidth=8, sashrelief="flat",
+                               borderwidth=0)
+        paned.pack(fill="both", expand=True)
+
+        # ── Left panel: Script ──
+        left = tk.Frame(paned, bg=T.PANEL, highlightthickness=1,
+                        highlightbackground=T.BORDER,
+                        highlightcolor=T.BORDER)
+        paned.add(left, stretch="always", minsize=340)
+
+        left_head = tk.Frame(left, bg=T.PANEL)
+        left_head.pack(fill="x", padx=14, pady=(12, 8))
+        ttk.Label(left_head, text="📝  SCRIPT", style="PanelHeader.TLabel").pack(
+            side="left")
+        ttk.Label(left_head, text="editable", style="Subtle.TLabel").pack(
+            side="right")
+
+        self.script_txt = scrolledtext.ScrolledText(
+            left, bg=T.INPUT, fg=T.FG,
+            insertbackground=T.GREEN_SOFT,
+            selectbackground=T.HOVER, selectforeground=T.FG,
+            font=self.fonts["mono"], wrap="none", relief="flat",
+            borderwidth=0, padx=14, pady=10,
+            tabs="4c",
+        )
+        self.script_txt.pack(fill="both", expand=True, padx=1, pady=(0, 1))
+        self.script_txt.insert("1.0", DEFAULT_SCRIPT)
+
+        # ── Right panel: Output ──
+        right = tk.Frame(paned, bg=T.PANEL, highlightthickness=1,
+                         highlightbackground=T.BORDER,
+                         highlightcolor=T.BORDER)
+        paned.add(right, stretch="always", minsize=340)
+
+        right_head = tk.Frame(right, bg=T.PANEL)
+        right_head.pack(fill="x", padx=14, pady=(12, 8))
+        ttk.Label(right_head, text="📤  OUTPUT", style="PanelHeader.TLabel").pack(
+            side="left")
+
+        # Output action buttons
+        act_frame = tk.Frame(right_head, bg=T.PANEL)
+        act_frame.pack(side="right")
+        for text, cmd in [
+            ("🗑", lambda: self.output_txt.delete("1.0", "end")),
+            ("💾", self._save_output),
+            ("📋", self._copy_output),
+        ]:
+            b = tk.Button(act_frame, text=text,
+                          bg=T.PANEL, fg=T.FG_MUTED,
+                          activebackground=T.HOVER, activeforeground=T.FG,
+                          relief="flat", borderwidth=0, cursor="hand2",
+                          font=self.fonts["ui"], padx=8, pady=2,
+                          command=cmd)
+            b.pack(side="right", padx=2)
+
+        self.output_txt = scrolledtext.ScrolledText(
+            right, bg=T.INPUT, fg=T.FG,
+            insertbackground=T.FG,
+            selectbackground=T.HOVER, selectforeground=T.FG,
+            font=self.fonts["mono"], wrap="word", relief="flat",
+            borderwidth=0, padx=14, pady=10,
+        )
+        self.output_txt.pack(fill="both", expand=True, padx=1, pady=(0, 1))
+
+        # Output color tags
+        self.output_txt.tag_config("ok",    foreground=T.OK)
+        self.output_txt.tag_config("err",   foreground=T.ERROR)
+        self.output_txt.tag_config("warn",  foreground=T.WARN)
+        self.output_txt.tag_config("muted", foreground=T.FG_MUTED)
+        self.output_txt.tag_config("subtle",foreground=T.FG_SUBTLE)
+        self.output_txt.tag_config("head",  foreground=T.BLUE,
+                                   font=self.fonts["mono_bold"],
+                                   spacing1=6, spacing3=4)
+        self.output_txt.tag_config("op",    foreground=T.FG,
+                                   font=self.fonts["mono_bold"])
+        self.output_txt.tag_config("diff+", foreground=T.OK,
+                                   background=T.DIFF_ADD_BG)
+        self.output_txt.tag_config("diff-", foreground=T.ERROR,
+                                   background=T.DIFF_DEL_BG)
+
+        # Empty-state hint
+        self._show_output_hint()
+
+    def _show_output_hint(self):
+        """Show a subtle centered hint when output is empty."""
+        hint = (
+            "\n\n\n\n\n"
+            "                       Preview or Run\n"
+            "               to see results here\n"
+            "\n"
+            "                    F5 = Run   ·   Ctrl+Enter = Preview\n"
+        )
+        self.output_txt.insert("1.0", hint, "subtle")
+        self.output_txt.config(state="disabled")
+
+    def _clear_output_hint(self):
+        self.output_txt.config(state="normal")
+        self.output_txt.delete("1.0", "end")
+
+    def _build_status_bar(self):
+        """Rich footer: status dot + counters + version."""
+        bar = tk.Frame(self.root, bg=T.PANEL, height=32)
+        bar.pack(fill="x", side="bottom")
+        bar.pack_propagate(False)
+
+        inner = tk.Frame(bar, bg=T.PANEL)
+        inner.pack(fill="both", expand=True, padx=20, pady=6)
+
+        # Left: status dot + text
+        left = tk.Frame(inner, bg=T.PANEL)
+        left.pack(side="left")
+
+        self.status_dot = tk.Canvas(left, width=10, height=10,
+                                    bg=T.PANEL, highlightthickness=0)
+        self.status_dot.pack(side="left", padx=(0, 8), pady=4)
+        self._set_status_dot(T.OK)
+
+        self.status_var = tk.StringVar(value="Ready")
+        tk.Label(left, textvariable=self.status_var,
+                 bg=T.PANEL, fg=T.FG,
+                 font=self.fonts["ui"]).pack(side="left")
+
+        # Middle divider + op count
+        self._status_divider(inner)
+        self.ops_var = tk.StringVar(value="0 ops")
+        tk.Label(inner, textvariable=self.ops_var,
+                 bg=T.PANEL, fg=T.FG_MUTED,
+                 font=self.fonts["ui_small"]).pack(side="left")
+
+        # Middle divider + backup count
+        self._status_divider(inner)
+        self.backup_var = tk.StringVar(value="0 backups")
+        blbl = tk.Label(inner, textvariable=self.backup_var,
+                        bg=T.PANEL, fg=T.FG_MUTED,
+                        font=self.fonts["ui_small"], cursor="hand2")
+        blbl.pack(side="left")
+        blbl.bind("<Button-1>", lambda e: self._sessions())
+
+        # Right: version
+        tk.Label(inner, text=f"DevKit v1.1  ·  Python {sys.version_info.major}.{sys.version_info.minor}",
+                 bg=T.PANEL, fg=T.FG_SUBTLE,
+                 font=self.fonts["ui_small"]).pack(side="right")
+
+    def _status_divider(self, parent):
+        tk.Frame(parent, bg=T.BORDER, width=1).pack(
+            side="left", fill="y", padx=14, pady=4)
+
+    def _set_status_dot(self, color):
+        self.status_dot.delete("all")
+        self.status_dot.create_oval(1, 1, 9, 9, fill=color, outline="")
+
+    def _refresh_backup_count(self):
+        try:
+            sessions = backup.list_sessions(self.cwd)
+            n = len(sessions)
+            self.backup_var.set(f"{n} backup{'s' if n != 1 else ''}")
+        except Exception:
+            self.backup_var.set("0 backups")
+
+    # ═══════════════════════════════════════════════════════════
+    #  ACTIONS
+    # ═══════════════════════════════════════════════════════════
+    def _pick_folder(self):
+        folder = filedialog.askdirectory(initialdir=self.cwd, title="Choose project root")
+        if folder:
+            self.cwd = folder
+            self.project_var.set(folder)
+            self._status(f"Project: {folder}")
+            self._refresh_backup_count()
+
+    def _paste_clipboard(self):
+        try:
+            text = self.root.clipboard_get()
+            self.script_txt.delete("1.0", "end")
+            self.script_txt.insert("1.0", text)
+            self._status("Pasted from clipboard")
+        except tk.TclError:
+            messagebox.showwarning("Clipboard empty", "Nothing to paste.")
+
+    def _load_script(self):
+        p = filedialog.askopenfilename(title="Load script",
+            filetypes=[("DevKit scripts", "*.dk *.txt"), ("All files", "*.*")])
+        if not p: return
+        with open(p, "r", encoding="utf-8") as f:
+            self.script_txt.delete("1.0", "end")
+            self.script_txt.insert("1.0", f.read())
+        self._status(f"Loaded {os.path.basename(p)}")
+
+    def _save_script(self):
+        p = filedialog.asksaveasfilename(title="Save script",
+            defaultextension=".dk",
+            filetypes=[("DevKit scripts", "*.dk"), ("Text", "*.txt")])
+        if not p: return
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(self.script_txt.get("1.0", "end-1c"))
+        self._status(f"Saved {os.path.basename(p)}")
+
+    def _clear(self):
+        self.script_txt.delete("1.0", "end")
+        self._clear_output_hint()
+        self._show_output_hint()
+        self._status("Cleared")
+
+    def _quick_tree(self):
+        self.script_txt.delete("1.0", "end")
+        self.script_txt.insert("1.0", ":TREE . --depth 3\n")
+        self._execute(True)
+
+    def _undo(self):
+        sessions = backup.list_sessions(self.cwd)
+        if not sessions:
+            messagebox.showinfo("Undo", "No backup sessions to restore.")
+            return
+        if not messagebox.askyesno("Undo", f"Restore last session '{sessions[0]}'?"):
+            return
+        try:
+            restored = backup.restore_session(self.cwd, sessions[0])
+            self._clear_output_hint()
+            self._log(f"↺  Restored {len(restored)} file(s) from {sessions[0]}", "ok")
+            for r in restored:
+                self._log(f"    • {r}", "muted")
+            self._refresh_backup_count()
+        except Exception as e:
+            self._log(f"✗  Restore failed: {e}", "err")
+
+    def _sessions(self):
+        sessions = backup.list_sessions(self.cwd)
+        self._clear_output_hint()
+        if not sessions:
+            self._log("(no backup sessions)", "muted")
+            return
+        self._log("── Backup Sessions ──", "head")
+        for s in sessions:
+            self._log(f"    • {s}", "muted")
+
+    def _show_manual(self):
+        self._show_text_window("DevKit Manual", MANUAL, 900, 700)
+
+    def _show_quickstart(self):
+        self._show_text_window("DevKit — Quick Start", QUICK_START, 640, 560)
+
+    def _show_text_window(self, title, content, w, h):
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.geometry(f"{w}x{h}")
+        win.configure(bg=T.BG)
+        txt = scrolledtext.ScrolledText(win, bg=T.INPUT, fg=T.FG,
+            font=self.fonts["mono"], wrap="word", relief="flat",
+            padx=16, pady=12, borderwidth=0)
+        txt.pack(fill="both", expand=True, padx=14, pady=14)
+        txt.insert("1.0", content)
+        txt.config(state="disabled")
+
+    # ═══════════════════════════════════════════════════════════
+    #  EXECUTION
+    # ═══════════════════════════════════════════════════════════
+    def _execute(self, dry_run: bool):
+        script = self.script_txt.get("1.0", "end-1c").strip()
+        if not script:
+            self._status("Nothing to run")
+            return
+
+        self._clear_output_hint()
+        self.op_count = 0
+        self._update_op_count()
+
+        mode = "PREVIEW" if dry_run else "RUN"
+        self._set_status_dot(T.WARN)
+        self._status(f"{mode} running…")
+
+        self._log(f"═══  {mode} in {self.cwd}  ═══", "head")
+
+        def worker():
+            try:
+                results = run_script(
+                    script, cwd=self.cwd, dry_run=dry_run,
+                    on_result=self._on_result_threadsafe,
+                )
+                self.root.after(0, lambda: self._log("", "muted"))
+                self.root.after(0, lambda: self._log(summarize(results), "head"))
+                ok = sum(1 for r in results if r.ok)
+                fail = len(results) - ok
+                self.root.after(0, lambda: self._finish_execution(mode, ok, fail))
+            except ParseError as e:
+                self.root.after(0, lambda: self._log(f"✗  PARSE ERROR: {e}", "err"))
+                self.root.after(0, lambda: self._set_status_dot(T.ERROR))
+                self.root.after(0, lambda: self._status("Parse error"))
+            except Exception as e:
+                self.root.after(0, lambda: self._log(f"✗  {type(e).__name__}: {e}", "err"))
+                self.root.after(0, lambda: self._set_status_dot(T.ERROR))
+                self.root.after(0, lambda: self._status(f"Error: {type(e).__name__}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _finish_execution(self, mode, ok, fail):
+        if fail == 0:
+            self._set_status_dot(T.OK)
+            self._status(f"{mode} done · {ok} ok")
+        else:
+            self._set_status_dot(T.ERROR)
+            self._status(f"{mode} done · {ok} ok · {fail} failed")
+        self._refresh_backup_count()
+
+    def _on_result_threadsafe(self, r):
+        self.root.after(0, lambda: self._print_result(r))
+
+    def _print_result(self, r):
+        self.op_count += 1
+        self._update_op_count()
+
+        icon = "✓" if r.ok else "✗"
+        tag  = "ok" if r.ok else "err"
+        self._log(f"{icon}  {r.op.kind:<15} {r.op.target}", tag)
+        if r.message:
+            self._log(f"     {r.message}", "muted")
+        if r.diff:
+            for line in r.diff.splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    self._log("     " + line, "diff+")
+                elif line.startswith("-") and not line.startswith("---"):
+                    self._log("     " + line, "diff-")
+                else:
+                    self._log("     " + line, "muted")
+        if r.output:
+            for line in r.output.splitlines():
+                self._log("     " + line)
+
+    def _update_op_count(self):
+        self.ops_var.set(f"{self.op_count} op{'s' if self.op_count != 1 else ''}")
+
+    def _log(self, text: str, tag: str = ""):
+        self.output_txt.insert("end", text + "\n", tag)
+        self.output_txt.see("end")
+
+    def _status(self, text: str):
+        self.status_var.set(text)
+
+    # ═══════════════════════════════════════════════════════════
+    #  OUTPUT PANEL ACTIONS
+    # ═══════════════════════════════════════════════════════════
+    def _copy_output(self):
+        text = self.output_txt.get("1.0", "end-1c")
+        if not text.strip():
+            self._status("Output is empty")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()
+        self._status(f"Copied output · {len(text):,} chars")
+
+    def _save_output(self):
+        text = self.output_txt.get("1.0", "end-1c")
+        if not text.strip():
+            self._status("Output is empty")
+            return
+        p = filedialog.asksaveasfilename(title="Save output",
+            defaultextension=".txt",
+            filetypes=[("Text", "*.txt"), ("All files", "*.*")])
+        if not p: return
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        self._status(f"Saved to {os.path.basename(p)}")
+
+    # ═══════════════════════════════════════════════════════════
+    #  MACRO ACTIONS
+    # ═══════════════════════════════════════════════════════════
+    def _copy_to_clipboard(self, text, label):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.root.update()
+        self._status(f"✓ Copied {label} · {len(text):,} chars")
+
+    def _copy_macro_tree(self, depth=3):
+        try:
+            tree = build_tree_text(self.cwd, depth=depth)
+            self._copy_to_clipboard(tree, f"project tree (depth {depth})")
+        except Exception as e:
+            self._clear_output_hint()
+            self._log(f"✗ Tree build failed: {e}", "err")
+
+    def _copy_macro_prompt(self):
+        try:
+            tree = build_tree_text(self.cwd, depth=3)
+            text = AI_COLLAB_PROMPT.replace("{TREE}", tree).replace("{SYNTAX}", AI_SYNTAX_REFERENCE)
+            self._copy_to_clipboard(text, "AI collab prompt")
+        except Exception as e:
+            self._clear_output_hint()
+            self._log(f"✗ Prompt build failed: {e}", "err")
+
+    def _copy_macro_syntax(self):
+        self._copy_to_clipboard(AI_SYNTAX_REFERENCE, "AI syntax reference")
+
+    def _copy_macro_all(self):
+        try:
+            text = build_all_in_one(self.cwd, depth=3)
+            self._copy_to_clipboard(text, "all-in-one AI package")
+        except Exception as e:
+            self._clear_output_hint()
+            self._log(f"✗ All-in-one build failed: {e}", "err")
+
+
+# ═══════════════════════════════════════════════════════════════
+#  DEFAULT SCRIPT (starter text)
+# ═══════════════════════════════════════════════════════════════
+DEFAULT_SCRIPT = """# Welcome to DevKit ✨
+# Paste or type operations here.
+# Preview to see what will happen, Run to apply.
+#
+#   F5           Run
+#   Ctrl+Enter   Preview
+#   Ctrl+L       Clear script
+
+# Try it out — peek at your project structure:
+:TREE . --depth 2
+"""
+
+
+def launch_gui():
+    root = tk.Tk()
+    DevKitGUI(root)
+    root.mainloop()
