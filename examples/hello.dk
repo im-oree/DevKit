@@ -1,4 +1,4 @@
-﻿# Example 1 — Hello DevKit
+# Example 1 — Hello DevKit
 # This creates a demo file, modifies it, and cleans up.
 
 :CREATE demo/hello.txt
