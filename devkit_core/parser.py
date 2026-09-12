@@ -1,4 +1,4 @@
-﻿"""
+"""
 Parses DevKit script syntax into a list of Operations.
 
 SYNTAX:
@@ -112,6 +112,9 @@ INLINE_OPS = {
     "GITADD", "GITCOMMIT",
 }
 
+# Read-only ops: single-line, no body, no :END required.
+READ_OPS = {"TREE", "READ", "SEARCH", "LIST", "INFO"}
+
 
 class ParseError(Exception):
     pass
@@ -119,6 +122,7 @@ class ParseError(Exception):
 
 def parse_script(text: str) -> List[Operation]:
     """Parse a full script into a list of Operations."""
+    text = text.lstrip("\ufeff")  # strip UTF-8 BOM if present
     lines = text.splitlines()
     ops: List[Operation] = []
     i = 0
@@ -146,10 +150,21 @@ def parse_script(text: str) -> List[Operation]:
             if op_name not in BLOCK_OPS:
                 raise ParseError(f"Line {i}: unknown block op ':{op_name}'")
 
-            # Read until :END (or a sentinel for one-liner read ops)
+            block_start = i
+
+            # Read-only ops are one-liners: everything they need is in the
+            # header, so they must NOT consume following lines as a body.
+            # (We still tolerate an optional :END right after, for symmetry.)
+            if op_name in READ_OPS:
+                if i < n and lines[i].strip() == ":END":
+                    i += 1
+                op = _build_block_op(op_name, rest, "", block_start)
+                ops.append(op)
+                continue
+
+            # Read until :END
             body_lines: List[str] = []
             found_end = False
-            block_start = i
             while i < n:
                 bl = lines[i]
                 if bl.strip() == ":END":
@@ -159,13 +174,11 @@ def parse_script(text: str) -> List[Operation]:
                 body_lines.append(bl)
                 i += 1
 
-            body = "\n".join(body_lines)
+            if not found_end:
+                raise ParseError(
+                    f"Line {block_start}: ':{op_name}' block is missing its ':END' terminator")
 
-            # Read-only ops don't need :END if they're single-line, but we
-            # still accept them for consistency.  If no :END and body is empty,
-            # treat header alone as the op.
-            if op_name in ("TREE", "READ", "SEARCH", "LIST", "INFO") and not found_end:
-                pass
+            body = "\n".join(body_lines)
 
             op = _build_block_op(op_name, rest, body, block_start)
             ops.append(op)
